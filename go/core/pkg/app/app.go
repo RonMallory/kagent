@@ -328,12 +328,6 @@ func Run(ctx context.Context, input *configv1.ControllerConfig, opts Options) er
 			return fmt.Errorf("set up library consumer controllers: %w", err)
 		}
 	}
-	mcpClient := toolservice.NewRuntimeMCPClient(manager.GetClient())
-	remoteMCPDiscovery := remotemcpcontroller.New(manager.GetClient(), mcpClient, store)
-	if err := remoteMCPDiscovery.SetupWithManager(manager); err != nil {
-		return fmt.Errorf("set up RemoteMCPServer discovery: %w", err)
-	}
-
 	authenticator, authorizer := opts.resolve()
 	if machine := cfg.GetServer().GetAuth().GetServiceAccount(); machine != nil {
 		reviewer, err := typedauth.NewForConfig(kubeConfig)
@@ -346,7 +340,6 @@ func Run(ctx context.Context, input *configv1.ControllerConfig, opts Options) er
 	authorizer = runtimeauth.NewAuthorizer(authorizer, store)
 	resourceNamespace := cfg.GetKubernetes().GetNamespace()
 	models := modelservice.NewService(manager.GetClient(), authorizer, resourceNamespace)
-	tools := toolservice.NewService(manager.GetClient(), store, authorizer, resourceNamespace, mcpClient)
 	prompts := prompttemplateservice.NewService(manager.GetClient(), authorizer)
 	system := systemservice.NewService(manager.GetClient(), watchNamespaces, authorizer, actors)
 	memory := memoryservice.NewService(store, authorizer)
@@ -433,6 +426,19 @@ func Run(ctx context.Context, input *configv1.ControllerConfig, opts Options) er
 	if err != nil {
 		return err
 	}
+	// RemoteMCPServers that point at this controller (the chart's kagent-api)
+	// are answered in-process: over HTTP the controller would have to
+	// authenticate to itself, and it has no credential to do that with.
+	controllerMCP, err := toolservice.NewControllerMCPEndpoint(cfg.GetRuntimeDefaults().GetControlPlaneUrl(), mcpHandler)
+	if err != nil {
+		return fmt.Errorf("configure in-process controller MCP: %w", err)
+	}
+	mcpClient := toolservice.NewRuntimeMCPClient(manager.GetClient(), toolservice.WithControllerMCP(controllerMCP))
+	remoteMCPDiscovery := remotemcpcontroller.New(manager.GetClient(), mcpClient, store)
+	if err := remoteMCPDiscovery.SetupWithManager(manager); err != nil {
+		return fmt.Errorf("set up RemoteMCPServer discovery: %w", err)
+	}
+	tools := toolservice.NewService(manager.GetClient(), store, authorizer, resourceNamespace, mcpClient)
 	policies, err := mergePolicies(grpcserver.DefaultMethodPolicies(), opts.MethodPolicies)
 	if err != nil {
 		return err
