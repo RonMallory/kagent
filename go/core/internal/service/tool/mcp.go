@@ -27,10 +27,25 @@ const (
 
 type RuntimeMCPClient struct {
 	kubeClient client.Client
+	// controller, when set, serves RemoteMCPServers that point at the
+	// controller's own /mcp in-process.
+	controller *ControllerMCPEndpoint
 }
 
-func NewRuntimeMCPClient(kubeClient client.Client) *RuntimeMCPClient {
-	return &RuntimeMCPClient{kubeClient: kubeClient}
+type RuntimeMCPClientOption func(*RuntimeMCPClient)
+
+// WithControllerMCP serves calls to the controller's own /mcp endpoint
+// in-process. See ControllerMCPEndpoint.
+func WithControllerMCP(endpoint *ControllerMCPEndpoint) RuntimeMCPClientOption {
+	return func(c *RuntimeMCPClient) { c.controller = endpoint }
+}
+
+func NewRuntimeMCPClient(kubeClient client.Client, options ...RuntimeMCPClientOption) *RuntimeMCPClient {
+	c := &RuntimeMCPClient{kubeClient: kubeClient}
+	for _, option := range options {
+		option(c)
+	}
+	return c
 }
 
 func (c *RuntimeMCPClient) ListTools(ctx context.Context, ref MCPServerRef) ([]MCPAppTool, error) {
@@ -142,6 +157,12 @@ func (c *RuntimeMCPClient) connect(ctx context.Context, ref MCPServerRef) (*mcp.
 	}
 
 	httpClient := newMCPAppsHTTPClient(headers)
+	if server.Spec.Protocol != v1alpha3.RemoteMCPServerProtocolSse && c.controller.Serves(server.Spec.URL) {
+		// The controller's own /mcp: answer in-process, without credentials.
+		// RemoteMCPServer headers are dropped because the authenticator is
+		// not on this path.
+		httpClient = c.controller.httpClient()
+	}
 	var transport mcp.Transport
 	switch server.Spec.Protocol {
 	case v1alpha3.RemoteMCPServerProtocolSse:
